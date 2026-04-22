@@ -84,20 +84,20 @@ graph TD
 
 ## 3. Core Modules
 
-### 3.1 Main & Config (`main.go`, `config/`)
+### 3.1 Main & Config (`cmd/orange/main.go`, `internal/config/`)
 -   **CLI Parsing**: Handles command-line flags (`-p`, `-i`, `--approval-policy`), custom `user@host` routing (including jump host syntax), and graceful connection teardown.
--   **Configuration**: Reads the local `~/.config/orange/config.json` to configure the LLM endpoint, model choice, `skills_dir`, and external `mcp_servers`.
+-   **Configuration**: Reads the local `~/.internal/config/orange/config.json` to configure the LLM endpoint, model choice, `skills_dir`, and external `mcp_servers`.
 
-### 3.2 SSH Client (`sshclient/`)
+### 3.2 SSH Client (`internal/sshclient/`)
 -   **Authentication**: Wraps `golang.org/x/crypto/ssh`. It supports public-key authentication via `SSH_AUTH_SOCK` (SSH Agent) or an explicit identity file (`-i`). If public-key auth fails, it falls back to **Interactive Password Authentication**.
 -   **Security**: Manages `known_hosts` verification to protect against MITM attacks. If a host key is unknown, it prompts the user for confirmation before appending it to `~/.ssh/known_hosts`.
 -   **PTY Management**: Requests a `xterm-256color` PTY that matches the user's local terminal size.
 
-### 3.3 TTY Interceptor (`tty/`)
+### 3.3 TTY Interceptor (`internal/tty/`)
 -   **Stream Bridging**: The heart of the application. It spawns goroutines to continuously read from the remote `stdout`/`stderr` and write to the local terminal while copying a chunk of the stream to the `RingBuffer`.
 -   **Input Handling**: It intercepts local `stdin` rune-by-rune (handling multi-byte UTF-8 encoded characters properly, e.g., Chinese input) to detect the `Ctrl+A` sequence and toggle between Passthrough and Assistant modes.
 
-### 3.4 LLM & MCP Integration (`llm/`)
+### 3.4 LLM & MCP Integration (`internal/llm/`)
 -   **Prompt Engineering**: Formats requests using the standard OpenAI chat completions schema. It dynamically injects instructions from local Markdown files (`Skills`) to constrain the AI's behavior and formatting rules.
 -   **MCP Client**: For advanced tool usage, it spawns child processes defined in `mcp_servers`, connects via `stdio`, and negotiates available tools using the Model Context Protocol (JSON-RPC 2.0). These tools are converted into LLM functions and appended to the prompt.
 

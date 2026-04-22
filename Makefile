@@ -10,30 +10,30 @@ all: build
 build:
 	@echo "Building $(APP_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(APP_NAME) main.go
+	go build -o $(BUILD_DIR)/$(APP_NAME) ./cmd/orange
 	@echo "Building mcpserver..."
 	go build -o $(BUILD_DIR)/mcpserver cmd/mcpserver/main.go
 
 build-linux:
 	@echo "Building $(APP_NAME) for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(APP_NAME)-linux-amd64 main.go
+	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(APP_NAME)-linux-amd64 ./cmd/orange
 	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/mcpserver-linux-amd64 cmd/mcpserver/main.go
 
 build-mac:
 	@echo "Building $(APP_NAME) for MacOS (Apple Silicon)..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=darwin GOARCH=arm64 go build -o $(BUILD_DIR)/$(APP_NAME)-darwin-arm64 main.go
+	GOOS=darwin GOARCH=arm64 go build -o $(BUILD_DIR)/$(APP_NAME)-darwin-arm64 ./cmd/orange
 	GOOS=darwin GOARCH=arm64 go build -o $(BUILD_DIR)/mcpserver-darwin-arm64 cmd/mcpserver/main.go
 	@echo "Building $(APP_NAME) for MacOS (Intel)..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/$(APP_NAME)-darwin-amd64 main.go
+	GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/$(APP_NAME)-darwin-amd64 ./cmd/orange
 	GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/mcpserver-darwin-amd64 cmd/mcpserver/main.go
 
 build-windows:
 	@echo "Building $(APP_NAME) for Windows..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=windows GOARCH=amd64 go build -o $(BUILD_DIR)/$(APP_NAME)-windows-amd64.exe main.go
+	GOOS=windows GOARCH=amd64 go build -o $(BUILD_DIR)/$(APP_NAME)-windows-amd64.exe ./cmd/orange
 	GOOS=windows GOARCH=amd64 go build -o $(BUILD_DIR)/mcpserver-windows-amd64.exe cmd/mcpserver/main.go
 
 run:
