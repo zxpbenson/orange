@@ -7,9 +7,9 @@ import (
 	"os/user"
 	"strings"
 
-	"github.com/zxpbenson/orange/config"
-	"github.com/zxpbenson/orange/sshclient"
-	"github.com/zxpbenson/orange/tty"
+	"github.com/zxpbenson/orange/internal/config"
+	"github.com/zxpbenson/orange/internal/sshclient"
+	"github.com/zxpbenson/orange/internal/tty"
 	"golang.org/x/term"
 )
 

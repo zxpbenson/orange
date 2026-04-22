@@ -9,8 +9,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/zxpbenson/orange/config"
-	"github.com/zxpbenson/orange/llm"
+	"github.com/zxpbenson/orange/internal/config"
+	"github.com/zxpbenson/orange/internal/llm"
 )
 
 // RingBuffer stores the last N bytes of terminal output

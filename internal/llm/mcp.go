@@ -7,7 +7,7 @@ import (
 	"io"
 	"os/exec"
 
-	"github.com/zxpbenson/orange/config"
+	"github.com/zxpbenson/orange/internal/config"
 )
 
 type MCPClient struct {

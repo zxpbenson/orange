@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/zxpbenson/orange/config"
-	"github.com/zxpbenson/orange/llm/skills"
+	"github.com/zxpbenson/orange/internal/config"
+	"github.com/zxpbenson/orange/internal/llm/skills"
 )
 
 type Message struct {
