@@ -1,0 +1,13 @@
+{
+    "llm_endpoint": "https://api.openai.com/v1",
+    "api_key": "sk-your-api-key-here",
+    "model": "gpt-4o",
+    "skills_dir": "~/.config/orange/skills",
+    "mcp_servers": {
+        "example_mcp": {
+            "command": "./build/mcpserver",
+            "args": [],
+            "env": []
+        }
+    }
+}
