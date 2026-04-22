@@ -133,7 +133,7 @@ func AskAssistant(cfg *config.Config, prompt string) (string, error) {
 
 	if resp.StatusCode != 200 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API Error: %d %s", resp.StatusCode, string(bodyBytes))
+		var errResp struct { Error struct { Message string `json:"message"` } `json:"error"` }; if err := json.Unmarshal(bodyBytes, &errResp); err == nil && errResp.Error.Message != "" { return "", fmt.Errorf("API Error (%d): %s", resp.StatusCode, errResp.Error.Message) }; return "", fmt.Errorf("API Error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var chatResp ChatResponse
