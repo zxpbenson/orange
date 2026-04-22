@@ -4,6 +4,7 @@
 
 You can use Orange exactly like you use native SSH. But when you encounter a cryptic error, a complex deployment task, or simply need to analyze system performance, an intelligent AI agent is just a keystroke away.
 
+![Screenshot](doc/20260422121308_191_654.png)
 ## ✨ Why Orange?
 
 - **Zero Friction Context**: Stop copying and pasting terminal logs into a web browser. Orange automatically captures the last 8KB of your terminal output and sends it directly to the AI as context.
