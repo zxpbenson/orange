@@ -3,6 +3,7 @@
     "api_key": "sk-your-api-key-here",
     "model": "gpt-4o",
     "skills_dir": "~/.config/orange/skills",
+    "shortcut_key": "ctrl+g",
     "mcp_servers": {
         "example_mcp": {
             "command": "./build/mcpserver",

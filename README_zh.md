@@ -15,7 +15,7 @@
 ## 🚀 核心功能
 
 ### 🗣️ 交互式助手
-在活动的 SSH 会话中，随时按下 **`Ctrl+A`** 即可唤醒助手。与远程服务器的连接会暂停，允许您向 AI 提问（支持中文、英文等）。AI 会分析您最近的终端历史记录，并在控制台中直接为您提供响应。
+在活动的 SSH 会话中，随时按下 **`Ctrl+G`** 即可唤醒助手。与远程服务器的连接会暂停，允许您向 AI 提问（支持中文、英文等）。AI 会分析您最近的终端历史记录，并在控制台中直接为您提供响应。
 
 ### ⚡ 安全的命令执行
 如果 AI 认为特定的命令可以解决您的问题，它会给出建议。默认情况下，Orange 会拦截此命令并请求您的批准（`Do you want to execute it? [Y/n]`）。如果批准，它将在远程服务器上运行该命令，并立即将输出流回给您。
@@ -64,7 +64,7 @@ Orange 支持一个 `Skills` 目录，您可以在其中存放包含自定义故
 
 连接后，触发 AI:
 ```text
-[Orange] Connected. Press Ctrl+A to ask the AI assistant.
+[Orange] Connected. Press Ctrl+G to ask the AI assistant.
 ```
 
 ### 命令行参数

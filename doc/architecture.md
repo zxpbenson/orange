@@ -7,7 +7,7 @@ This document outlines the high-level architecture, core modules, and execution 
 Orange sits transparently between the user's local terminal and the remote SSH server. It functions in two primary modes:
 
 1.  **Passthrough Mode (Default):** Standard `stdin`, `stdout`, and `stderr` streams are piped directly to and from the remote SSH session. The application quietly maintains a rolling buffer (`RingBuffer`) of recent terminal outputs.
-2.  **Assistant Mode:** Triggered by a specific hotkey (`Ctrl+A`). Orange temporarily intercepts `stdin`, pauses the passthrough, and captures user input for the AI. It then sends the user's prompt, along with the contextual history from the `RingBuffer` and loaded `Skills` (Markdown guides), to an external Large Language Model (LLM).
+2.  **Assistant Mode:** Triggered by a specific hotkey (`Ctrl+G`). Orange temporarily intercepts `stdin`, pauses the passthrough, and captures user input for the AI. It then sends the user's prompt, along with the contextual history from the `RingBuffer` and loaded `Skills` (Markdown guides), to an external Large Language Model (LLM).
 
 If the AI suggests a command to resolve an issue, Orange enters an **Approval Workflow** to allow the user to execute the command directly on the remote server safely.
 
@@ -60,7 +60,7 @@ graph TD
     CLI --> Interceptor
     
     Interceptor -->|Reads| InputHandler
-    InputHandler -->|Ctrl+A trigger| PromptBuilder
+    InputHandler -->|Ctrl+G trigger| PromptBuilder
     Interceptor -->|Stores last N bytes| RingBuffer
     
     PromptBuilder -->|Context| RingBuffer
@@ -95,7 +95,7 @@ graph TD
 
 ### 3.3 TTY Interceptor (`internal/tty/`)
 -   **Stream Bridging**: The heart of the application. It spawns goroutines to continuously read from the remote `stdout`/`stderr` and write to the local terminal while copying a chunk of the stream to the `RingBuffer`.
--   **Input Handling**: It intercepts local `stdin` rune-by-rune (handling multi-byte UTF-8 encoded characters properly, e.g., Chinese input) to detect the `Ctrl+A` sequence and toggle between Passthrough and Assistant modes.
+-   **Input Handling**: It intercepts local `stdin` rune-by-rune (handling multi-byte UTF-8 encoded characters properly, e.g., Chinese input) to detect the `Ctrl+G` sequence and toggle between Passthrough and Assistant modes.
 
 ### 3.4 LLM & MCP Integration (`internal/llm/`)
 -   **Prompt Engineering**: Formats requests using the standard OpenAI chat completions schema. It dynamically injects instructions from local Markdown files (`Skills`) to constrain the AI's behavior and formatting rules.
@@ -157,7 +157,7 @@ sequenceDiagram
     TTYInterceptor->>User: Print Output
     TTYInterceptor->>TTYInterceptor: Save to RingBuffer
 
-    User->>TTYInterceptor: Presses `Ctrl+A`
+    User->>TTYInterceptor: Presses `Ctrl+G`
     TTYInterceptor->>User: Show Assistant Prompt
     User->>TTYInterceptor: Types "Fix this error"
     

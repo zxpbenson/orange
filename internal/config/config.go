@@ -18,6 +18,7 @@ type Config struct {
 	Model        string                     `json:"model"`
 	SkillsDir    string                     `json:"skills_dir"`
 	MCPServers   map[string]MCPServerConfig `json:"mcp_servers"`
+	ShortcutKey  string                     `json:"shortcut_key"`
 	ApprovalMode string                     `json:"-"` // Set via CLI flag, not JSON
 }
 
@@ -35,6 +36,7 @@ func LoadConfig() (*Config, error) {
 			return &Config{
 				LLMEndpoint: "https://api.openai.com/v1",
 				Model:       "gpt-4o",
+				ShortcutKey: "ctrl+g",
 			}, nil
 		}
 		return nil, err
@@ -43,6 +45,10 @@ func LoadConfig() (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	if cfg.ShortcutKey == "" {
+		cfg.ShortcutKey = "ctrl+g"
 	}
 
 	return &cfg, nil

@@ -67,6 +67,17 @@ func NewInterceptor(cfg *config.Config, remoteIn io.Writer, remoteOut, remoteErr
 	}
 }
 
+func parseShortcutKey(key string) byte {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "ctrl+") && len(key) == 6 {
+		char := key[5]
+		if char >= 'a' && char <= 'z' {
+			return char - 'a' + 1
+		}
+	}
+	return 0x07 // fallback to ctrl+g
+}
+
 func extractCommand(text string) string {
 	start := strings.Index(text, "```bash")
 	if start != -1 {
@@ -139,9 +150,10 @@ func (i *Interceptor) Start() {
 
 		// Handle toggling assistant mode
 		// Some terminals might send Ctrl+A within a larger block, but usually it's solitary
+		shortcutByte := parseShortcutKey(i.cfg.ShortcutKey)
 		for j := 0; j < len(inputData); j++ {
 			char := inputData[j]
-			if char == 0x01 { // Ctrl+A
+			if char == shortcutByte { // Dynamic shortcut
 				i.assistant = !i.assistant
 				if i.assistant {
 					fmt.Print("\r\n\033[33m[Orange Assistant] Enter your question (press Enter to submit, Ctrl+C to cancel): \033[0m")

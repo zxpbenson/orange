@@ -115,7 +115,7 @@ func run() error {
 
 	interceptor := tty.NewInterceptor(cfg, stdin, stdout, stderr)
 
-	fmt.Print("\r\n\033[32m[Orange] Connected. Press Ctrl+A to ask the AI assistant.\033[0m\r\n")
+	fmt.Printf("\r\n\033[32m[Orange] Connected. Press %s to ask the AI assistant.\033[0m\r\n", strings.ToUpper(cfg.ShortcutKey))
 
 	// Start the remote shell FIRST
 	if err := client.Shell(session); err != nil {

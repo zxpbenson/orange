@@ -14,7 +14,7 @@ You can use Orange exactly like you use native SSH. But when you encounter a cry
 ## 🚀 Core Capabilities
 
 ### 🗣️ The Interactive Assistant
-Press **`Ctrl+A`** at any time during an active SSH session to wake up the assistant. The connection to the remote server pauses, allowing you to ask the AI a question (in English, Chinese, etc.). The AI analyzes your recent terminal history and provides a response right in your console.
+Press **`Ctrl+G`** at any time during an active SSH session to wake up the assistant. The connection to the remote server pauses, allowing you to ask the AI a question (in English, Chinese, etc.). The AI analyzes your recent terminal history and provides a response right in your console.
 
 ### ⚡ Safe Command Execution
 If the AI determines that a specific command will fix your issue, it will suggest it. By default, Orange intercepts this command and prompts you for approval (`Do you want to execute it? [Y/n]`). If approved, it runs the command on your remote server and streams the output back to you immediately.
@@ -63,7 +63,7 @@ Connect to a server just like SSH:
 
 When connected, trigger the AI:
 ```text
-[Orange] Connected. Press Ctrl+A to ask the AI assistant.
+[Orange] Connected. Press Ctrl+G to ask the AI assistant.
 ```
 
 ### CLI Flags
