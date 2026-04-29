@@ -1,7 +1,7 @@
 # Orange: AI-powered SSH Proxy Assistant
 
 ## 整体流程 (Overall Flow)
-1. **启动与配置加载**: 用户在本地运行 `orange user@host`，程序首先读取本地配置文件（如 `~/.config/orange/config.yaml`），获取 LLM API Key、Model 服务地址等。
+1. **启动与配置加载**: 用户在本地运行 `orange user@host`，程序首先读取本地配置文件（如 `~/.config/orange/config.json`），获取 LLM API Key、Model 服务地址等。
 2. **建立 SSH 连接**: 建立到目标 Linux 服务器的 SSH 连接，并请求一个 PTY（伪终端）。
 3. **输入拦截与分发**:
    - 将本地终端设置为 Raw 模式。
