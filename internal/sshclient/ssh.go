@@ -169,7 +169,11 @@ func (c *Client) RequestPty(session *ssh.Session) error {
 		ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	return session.RequestPty("xterm-256color", termHeight, termWidth, modes)
+	termEnv := os.Getenv("TERM")
+	if termEnv == "" {
+		termEnv = "xterm-256color"
+	}
+	return session.RequestPty(termEnv, termHeight, termWidth, modes)
 }
 
 func (c *Client) Shell(session *ssh.Session) error {

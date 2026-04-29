@@ -55,6 +55,7 @@ type Interceptor struct {
 	assistBuf    bytes.Buffer
 	pendingCmd   string
 	awaitingConf bool
+	escState     int // 0: normal, 1: seen ESC, 2: in OSC, 3: in OSC seen ESC
 }
 
 func NewInterceptor(cfg *config.Config, remoteIn io.Writer, remoteOut, remoteErr io.Reader) *Interceptor {
@@ -153,17 +154,43 @@ func (i *Interceptor) Start() {
 		shortcutByte := parseShortcutKey(i.cfg.ShortcutKey)
 		for j := 0; j < len(inputData); j++ {
 			char := inputData[j]
-			if char == shortcutByte { // Dynamic shortcut
-				i.assistant = !i.assistant
-				if i.assistant {
-					fmt.Print("\r\n\033[33m[Orange Assistant] Enter your question (press Enter to submit, Ctrl+C to cancel): \033[0m")
-					i.assistBuf.Reset()
-				} else {
-					fmt.Print("\r\n\033[32m[Orange] Returned to SSH.\033[0m\r\n")
+
+			if i.escState == 0 {
+				if char == '' {
+					i.escState = 1
+				} else if char == shortcutByte {
+					i.assistant = !i.assistant
+					if i.assistant {
+						fmt.Print("\r\n\033[33m[Orange Assistant] Enter your question (press Enter to submit, Ctrl+C to cancel): \033[0m")
+						i.assistBuf.Reset()
+					} else {
+						fmt.Print("\r\n\033[32m[Orange] Returned to SSH.\033[0m\r\n")
+					}
+					inputData = append(inputData[:j], inputData[j+1:]...)
+					j--
 				}
-				// Remove Ctrl+A from inputData so we don't process it further
-				inputData = append(inputData[:j], inputData[j+1:]...)
-				j-- // Adjust index
+			} else if i.escState == 1 {
+				if char == ']' {
+					i.escState = 2
+				} else if char == '' {
+					i.escState = 1
+				} else {
+					i.escState = 0
+				}
+			} else if i.escState == 2 {
+				if char == '' {
+					i.escState = 0
+				} else if char == '' {
+					i.escState = 3
+				}
+			} else if i.escState == 3 {
+				if char == '\\' {
+					i.escState = 0
+				} else if char == '' {
+					i.escState = 3
+				} else {
+					i.escState = 2
+				}
 			}
 		}
 
