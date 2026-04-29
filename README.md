@@ -16,8 +16,19 @@ You can use Orange exactly like you use native SSH. But when you encounter a cry
 ### 🗣️ The Interactive Assistant
 Press **`Ctrl+G`** at any time during an active SSH session to wake up the assistant. The connection to the remote server pauses, allowing you to ask the AI a question (in English, Chinese, etc.). The AI analyzes your recent terminal history and provides a response right in your console.
 
-### ⚡ Safe Command Execution
-If the AI determines that a specific command will fix your issue, it will suggest it. By default, Orange intercepts this command and prompts you for approval (`Do you want to execute it? [Y/n]`). If approved, it runs the command on your remote server and streams the output back to you immediately.
+### ⚡ Standard Assistant Mode (Default)
+In default mode, Orange acts as an intelligent proxy. If the AI determines that a command will fix your issue, it suggests it and waits for your approval (`[Y/n]`). If approved, Orange types the command into your terminal for you. **Note:** In this mode, Orange does not track when the command finishes. You will see the output on your screen, but you must press `Ctrl+G` again if you want the AI to analyze the results.
+
+### 🤖 Autonomous Agentic Loop (`--autonomous`)
+When started with the `--autonomous` flag, Orange transforms into a fully autonomous agent. Instead of stopping after typing a command, it forms a **Reasoning-Acting-Observation Loop**:
+1. The AI decides what commands to run to gather data.
+2. Orange blocks and actively tracks the command's execution.
+3. Once finished, Orange automatically feeds the output and exit codes back to the AI for analysis.
+4. The AI summarizes the findings and presents a final report.
+
+It accomplishes this using a **Dual-Track Execution** system:
+- **Background Silent Execution**: For analytical commands (like `cat`, `grep`, `top`), the agent executes them in a hidden background SSH session. Your terminal remains clean.
+- **Foreground Interactive Execution**: For commands that change your environment (like `cd`) or require a UI (like `vim`), the agent executes them directly in your active PTY.
 
 ### 🛠️ Agent Skills System
 Orange supports a `Skills` directory where you can store Markdown files containing custom troubleshooting workflows or company-specific SOPs (e.g., Docker Debugging, Log Analysis). These skills are loaded into the AI's system prompt, strictly guiding its behavior and standardizing the commands it suggests.
@@ -70,6 +81,7 @@ When connected, trigger the AI:
 - `-p <port>`: Specify the remote SSH port (default: 22)
 - `-i <identity_file>`: Path to the private key file (default: `~/.ssh/id_rsa` or SSH Agent)
 - `--approval-policy`: Set to `always` (prompt before running AI commands) or `never` (run immediately, risky!)
+- `--autonomous`: Enable the fully autonomous Agentic Loop. The AI will continuously execute commands, analyze outputs, and make decisions until the task is complete.
 
 ## 📁 Documentation
 For an in-depth look at how the TTY interceptor, the LLM module, and the SSH client work together, please read the [Architecture Design Document](doc/architecture.md) which includes detailed Mermaid workflow diagrams.

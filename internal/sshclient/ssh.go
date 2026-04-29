@@ -191,3 +191,37 @@ func (c *Client) Close() {
 		c.agentConn.Close()
 	}
 }
+
+// ExecuteBackground runs a command in a new, independent SSH session without a PTY.
+// It optionally takes a workDir to execute the command within that directory context.
+func (c *Client) ExecuteBackground(cmd string, workDir string) (stdout string, stderr string, exitCode int, err error) {
+	session, err := c.client.NewSession()
+	if err != nil {
+		return "", "", -1, err
+	}
+	defer session.Close()
+
+	if workDir != "" {
+		// Make sure we cd to the correct directory first
+		cmd = fmt.Sprintf("cd '%s' && %s", workDir, cmd)
+	}
+
+	// Provide a bit of a wrapper to ensure we always run via bash (if available) to support pipes/redirects
+	cmd = fmt.Sprintf("bash -c '%s'", strings.ReplaceAll(cmd, "'", "'\\''"))
+
+	var stdoutBuf, stderrBuf strings.Builder
+	session.Stdout = &stdoutBuf
+	session.Stderr = &stderrBuf
+
+	err = session.Run(cmd)
+	exitCode = 0
+	if err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			exitCode = exitErr.ExitStatus()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	return stdoutBuf.String(), stderrBuf.String(), exitCode, err
+}

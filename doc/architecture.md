@@ -8,6 +8,7 @@ Orange sits transparently between the user's local terminal and the remote SSH s
 
 1.  **Passthrough Mode (Default):** Standard `stdin`, `stdout`, and `stderr` streams are piped directly to and from the remote SSH session. The application quietly maintains a rolling buffer (`RingBuffer`) of recent terminal outputs.
 2.  **Assistant Mode:** Triggered by a specific hotkey (`Ctrl+G`). Orange temporarily intercepts `stdin`, pauses the passthrough, and captures user input for the AI. It then sends the user's prompt, along with the contextual history from the `RingBuffer` and loaded `Skills` (Markdown guides), to an external Large Language Model (LLM).
+3.  **Autonomous Agent Mode (`--autonomous`):** The LLM replies with a strict JSON format outlining its *Thought*, *Action*, and *Command*. The agent automatically runs commands in a background SSH session to gather more context without polluting the user's terminal. It iteratively feeds the silent outputs back into the LLM until the final goal is met.
 
 If the AI suggests a command to resolve an issue, Orange enters an **Approval Workflow** to allow the user to execute the command directly on the remote server safely.
 
@@ -62,8 +63,10 @@ graph TD
     Interceptor -->|Reads| InputHandler
     InputHandler -->|Ctrl+G trigger| PromptBuilder
     Interceptor -->|Stores last N bytes| RingBuffer
+    Interceptor -->|State| SessionContext
     
     PromptBuilder -->|Context| RingBuffer
+    PromptBuilder -->|Context| SessionContext
     PromptBuilder -->|System Prompts| SkillsLoader
     SkillsLoader -.->|Reads| SkillsDir
     
@@ -96,6 +99,8 @@ graph TD
 ### 3.3 TTY Interceptor (`internal/tty/`)
 -   **Stream Bridging**: The heart of the application. It spawns goroutines to continuously read from the remote `stdout`/`stderr` and write to the local terminal while copying a chunk of the stream to the `RingBuffer`.
 -   **Input Handling**: It intercepts local `stdin` rune-by-rune (handling multi-byte UTF-8 encoded characters properly, e.g., Chinese input) to detect the `Ctrl+G` sequence and toggle between Passthrough and Assistant modes.
+-   **State Machine**: Parses ANSI escape sequences (OSC commands) to prevent conflicting hotkeys (like `0x07` BEL) from breaking terminal features like Vim's color query.
+-   **Session Context Tracking**: Maintains the `SessionContext` for the AI, capturing `$PWD`, Last Output, and Exit Code of commands injected into the remote session.
 
 ### 3.4 LLM & MCP Integration (`internal/llm/`)
 -   **Prompt Engineering**: Formats requests using the standard OpenAI chat completions schema. It dynamically injects instructions from local Markdown files (`Skills`) to constrain the AI's behavior and formatting rules.
@@ -172,9 +177,10 @@ sequenceDiagram
         TTYInterceptor->>RemoteServer: Send `sudo ls -la`
         RemoteServer-->>TTYInterceptor: Command Output
         TTYInterceptor->>User: Print Output
-    else Approval Policy: never
-        TTYInterceptor->>RemoteServer: Auto-execute `sudo ls -la`
-        RemoteServer-->>TTYInterceptor: Command Output
-        TTYInterceptor->>User: Print Output
+    else Autonomous Mode
+        TTYInterceptor->>RemoteServer: Auto-execute (Foreground or Silent Background)
+        RemoteServer-->>TTYInterceptor: Command Output & Exit Code
+        TTYInterceptor->>TTYInterceptor: Update SessionContext
+        TTYInterceptor->>LLMModule: Loop back with new context
     end
 ```

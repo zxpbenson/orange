@@ -49,10 +49,23 @@ type ChatResponse struct {
 }
 
 func AskAssistant(cfg *config.Config, prompt string) (string, error) {
-	systemPrompt := "You are an AI assistant helping a user manage a Linux server via SSH. The user will provide terminal history and a question or instruction. Answer concisely.\n\n"
-	systemPrompt += "CRITICAL INSTRUCTION: If you want to execute a command on the user's server, you MUST output it inside a special code block like this:\n"
-	systemPrompt += "```bash\n<command>\n```\n"
-	systemPrompt += "Do not use any other format for commands you want the user to run."
+	systemPrompt := "You are an AI assistant helping a user manage a Linux server via SSH. The user will provide terminal history and a question or instruction.\n\n"
+	if cfg.Autonomous {
+		systemPrompt += "CRITICAL INSTRUCTION: You are in AUTONOMOUS mode. You MUST output your response ONLY as a valid JSON object matching this schema:\n"
+		systemPrompt += "{\n"
+		systemPrompt += "  \"thought\": \"Your reasoning about the current state and what to do next\",\n"
+		systemPrompt += "  \"action\": \"exec_command\" or \"finish\",\n"
+		systemPrompt += "  \"command\": \"The shell command to run (only if action is exec_command)\",\n"
+		systemPrompt += "  \"interactive\": true or false, true ONLY if it changes env (cd) or opens UI (vim, top)\n"
+		systemPrompt += "  \"status\": \"CONTINUE\" or \"DONE\",\n"
+		systemPrompt += "  \"final_answer\": \"Your final response to the user (only if status is DONE)\"\n"
+		systemPrompt += "}\n"
+		systemPrompt += "Do not include any markdown formatting like ```json, just output the raw JSON object."
+	} else {
+		systemPrompt += "CRITICAL INSTRUCTION: If you want to execute a command on the user's server, you MUST output it inside a special code block like this:\n"
+		systemPrompt += "```bash\n<command>\n```\n"
+		systemPrompt += "Do not use any other format for commands you want the user to run."
+	}
 
 	// Append skills if available
 	systemPrompt += skills.LoadSkills(cfg.SkillsDir)
@@ -146,6 +159,15 @@ func AskAssistant(cfg *config.Config, prompt string) (string, error) {
 		
 		// Basic handling of tool call (Mock return)
 		if len(msg.ToolCalls) > 0 {
+			if cfg.Autonomous {
+				// Return a valid JSON to satisfy the Agentic Loop
+				return fmt.Sprintf(`{
+  "thought": "I am deciding to call the external MCP tool %s to get more information.",
+  "action": "finish",
+  "status": "DONE",
+  "final_answer": "The AI decided to call the tool: %s. (Tool execution mocked)"
+}`, msg.ToolCalls[0].Function.Name, msg.ToolCalls[0].Function.Name), nil
+			}
 			return fmt.Sprintf("The AI decided to call the tool: %s. (Tool execution mocked)", msg.ToolCalls[0].Function.Name), nil
 		}
 

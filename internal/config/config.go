@@ -20,6 +20,7 @@ type Config struct {
 	MCPServers   map[string]MCPServerConfig `json:"mcp_servers"`
 	ShortcutKey  string                     `json:"shortcut_key"`
 	ApprovalMode string                     `json:"-"` // Set via CLI flag, not JSON
+	Autonomous   bool                       `json:"-"` // Set via CLI flag
 }
 
 func LoadConfig() (*Config, error) {
