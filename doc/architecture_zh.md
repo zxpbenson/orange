@@ -7,7 +7,7 @@
 Orange 透明地位于用户的本地终端和远程 SSH 服务器之间。它主要在三种模式下运行：
 
 1.  **直通模式 (Passthrough Mode) (默认):** 标准的 `stdin`、`stdout` 和 `stderr` 流直接在本地与远程 SSH 会话之间建立管道。应用程序会在后台静默维护一个最近终端输出的滚动缓冲区 (`RingBuffer`)。
-2.  **助手模式 (Assistant Mode):** 通过特定快捷键 (`Ctrl+G`) 触发。Orange 临时拦截 `stdin`，暂停直通，并捕获用户的提问。随后它将用户的提示，连同来自 `RingBuffer` 的上下文历史和已加载的技能 (`Skills` Markdown 指南)，一起发送给外部的大语言模型 (LLM)。
+2.  **助手模式 (Assistant Mode):** 通过特定快捷键 (`Ctrl+G`) 触发。Orange 临时拦截 `stdin`，暂停直通，并通过 readline 风格的 **LineEditor**（支持光标移动、就地编辑、行删除命令以及完整的 UTF-8/CJK 宽字符处理）捕获用户的提问。随后它将用户的提示，连同来自 `RingBuffer` 的上下文历史和已加载的技能 (`Skills` Markdown 指南)，一起发送给外部的大语言模型 (LLM)。
 3.  **全自动智能体模式 (Autonomous Agent Mode) (`--autonomous`):** LLM 会以严格的 JSON 格式回复，阐述其 *Thought* (思考)、*Action* (行动) 和 *Command* (命令)。智能体会自动在一个后台 SSH 会话中静默运行命令，以收集更多上下文，而不会污染用户的终端。它将输出结果迭代地反馈给 LLM，直到完成最终任务目标。
 
 如果 AI 建议通过某条命令来解决问题，Orange 会进入 **审批工作流 (Approval Workflow)**，允许用户安全地确认并直接在远程服务器上执行该命令。
@@ -33,6 +33,7 @@ graph TD
             Interceptor[TTY Interceptor]
             RingBuffer[(RingBuffer\n8KB Context)]
             InputHandler[Input State Machine]
+            LineEditor[Line Editor\nCursor + Buffer]
             SessionContext[(Session\nContext)]
         end
 
@@ -63,6 +64,7 @@ graph TD
     
     Interceptor -->|Reads| InputHandler
     InputHandler -->|Ctrl+G trigger| PromptBuilder
+    InputHandler -->|CSI dispatch| LineEditor
     Interceptor -->|Stores last N bytes| RingBuffer
     Interceptor -->|State| SessionContext
     
@@ -101,7 +103,8 @@ graph TD
 ### 3.3 TTY 拦截器 (`internal/tty/`)
 -   **数据流桥接**: 应用程序的核心。它生成 goroutine 持续从远程 `stdout`/`stderr` 读取数据并写入本地终端，同时将部分数据流复制到 `RingBuffer`。
 -   **输入处理**: 它逐个字符拦截本地 `stdin`（正确处理多字节 UTF-8 编码字符，如中文输入），以检测 `Ctrl+G` 序列并在直通模式和助手模式之间切换。
--   **状态机**: 解析 ANSI 转义序列 (OSC 命令)，防止快捷键冲突（如 `0x07` BEL）破坏终端原生功能（例如 Vim 的颜色查询）。
+-   **状态机**: 解析 ANSI 转义序列 — 包括 OSC（操作系统命令）和 CSI（控制序列引导符）序列。在直通模式下，仅拦截快捷键。在助手模式下，CSI 序列（方向键、Home/End、Delete）会被消费并分发给 LineEditor。
+-   **LineEditor**: 一个 readline 风格的行编辑引擎，管理带光标位置跟踪的 rune 缓冲区。支持左右光标移动、Home/End 跳转、Backspace/Delete 删除、Ctrl+A/E/K/U/W 行编辑命令，以及对中日韩宽字符的正确列宽处理。
 -   **会话上下文追踪**: 为 AI 维护 `SessionContext`，捕获注入到远程会话中命令的 `$PWD`、最后输出 (Last Output) 和退出状态码 (Exit Code)。
 
 ### 3.4 LLM 与 MCP 集成 (`internal/llm/`)
@@ -167,6 +170,7 @@ sequenceDiagram
     User->>TTYInterceptor: 按下 `Ctrl+G`
     TTYInterceptor->>User: 显示助手提示符
     User->>TTYInterceptor: 输入 "修复这个错误"
+    Note over TTYInterceptor: LineEditor 处理光标移动、<br/>就地编辑（方向键、Home/End、<br/>Ctrl+A/E/K/U/W）
     
     TTYInterceptor->>LLMModule: 发送 Prompt + 上下文 (RingBuffer & SessionContext)
     LLMModule-->>TTYInterceptor: AI 响应: "运行 `sudo ls -la`"

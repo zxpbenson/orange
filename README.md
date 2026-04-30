@@ -16,6 +16,21 @@ You can use Orange exactly like you use native SSH. But when you encounter a cry
 ### 🗣️ The Interactive Assistant
 Press **`Ctrl+G`** at any time during an active SSH session to wake up the assistant. The connection to the remote server pauses, allowing you to ask the AI a question (in English, Chinese, etc.). The AI analyzes your recent terminal history and provides a response right in your console.
 
+The assistant input supports **full readline-style line editing** with the following shortcuts:
+
+| Shortcut | Action |
+|---|---|
+| `←` / `→` | Move cursor left / right |
+| `Home` / `End` | Jump to start / end of line |
+| `Ctrl+A` / `Ctrl+E` | Jump to start / end of line |
+| `Backspace` | Delete character before cursor |
+| `Delete` | Delete character at cursor |
+| `Ctrl+W` | Delete previous word |
+| `Ctrl+U` | Delete from start to cursor |
+| `Ctrl+K` | Delete from cursor to end |
+
+Full UTF-8 support is provided, including correct cursor handling for CJK wide characters.
+
 ### ⚡ Standard Assistant Mode (Default)
 In default mode, Orange acts as an intelligent proxy. If the AI determines that a command will fix your issue, it suggests it and waits for your approval (`[Y/n]`). If approved, Orange types the command into your terminal for you. **Note:** In this mode, Orange does not track when the command finishes. You will see the output on your screen, but you must press `Ctrl+G` again if you want the AI to analyze the results.
 

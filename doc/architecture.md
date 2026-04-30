@@ -7,7 +7,7 @@ This document outlines the high-level architecture, core modules, and execution 
 Orange sits transparently between the user's local terminal and the remote SSH server. It functions in two primary modes:
 
 1.  **Passthrough Mode (Default):** Standard `stdin`, `stdout`, and `stderr` streams are piped directly to and from the remote SSH session. The application quietly maintains a rolling buffer (`RingBuffer`) of recent terminal outputs.
-2.  **Assistant Mode:** Triggered by a specific hotkey (`Ctrl+G`). Orange temporarily intercepts `stdin`, pauses the passthrough, and captures user input for the AI. It then sends the user's prompt, along with the contextual history from the `RingBuffer` and loaded `Skills` (Markdown guides), to an external Large Language Model (LLM).
+2.  **Assistant Mode:** Triggered by a specific hotkey (`Ctrl+G`). Orange temporarily intercepts `stdin`, pauses the passthrough, and captures user input via a readline-style **LineEditor** (with cursor movement, in-place editing, kill commands, and full UTF-8/CJK support). It then sends the user's prompt, along with the contextual history from the `RingBuffer` and loaded `Skills` (Markdown guides), to an external Large Language Model (LLM).
 3.  **Autonomous Agent Mode (`--autonomous`):** The LLM replies with a strict JSON format outlining its *Thought*, *Action*, and *Command*. The agent automatically runs commands in a background SSH session to gather more context without polluting the user's terminal. It iteratively feeds the silent outputs back into the LLM until the final goal is met.
 
 If the AI suggests a command to resolve an issue, Orange enters an **Approval Workflow** to allow the user to execute the command directly on the remote server safely.
@@ -33,6 +33,7 @@ graph TD
             Interceptor[TTY Interceptor]
             RingBuffer[(RingBuffer\n8KB Context)]
             InputHandler[Input State Machine]
+            LineEditor[Line Editor\nCursor + Buffer]
         end
 
         subgraph LLM Module
@@ -62,6 +63,7 @@ graph TD
     
     Interceptor -->|Reads| InputHandler
     InputHandler -->|Ctrl+G trigger| PromptBuilder
+    InputHandler -->|CSI dispatch| LineEditor
     Interceptor -->|Stores last N bytes| RingBuffer
     Interceptor -->|State| SessionContext
     
@@ -89,7 +91,7 @@ graph TD
 
 ### 3.1 Main & Config (`cmd/orange/main.go`, `internal/config/`)
 -   **CLI Parsing**: Handles command-line flags (`-p`, `-i`, `--approval-policy`), custom `user@host` routing (including jump host syntax), and graceful connection teardown.
--   **Configuration**: Reads the local `~/.internal/config/orange/config.json` to configure the LLM endpoint, model choice, `skills_dir`, and external `mcp_servers`.
+-   **Configuration**: Reads the local `~/.config/orange/config.json` to configure the LLM endpoint, model choice, `skills_dir`, and external `mcp_servers`.
 
 ### 3.2 SSH Client (`internal/sshclient/`)
 -   **Authentication**: Wraps `golang.org/x/crypto/ssh`. It supports public-key authentication via `SSH_AUTH_SOCK` (SSH Agent) or an explicit identity file (`-i`). If public-key auth fails, it falls back to **Interactive Password Authentication**.
@@ -99,7 +101,8 @@ graph TD
 ### 3.3 TTY Interceptor (`internal/tty/`)
 -   **Stream Bridging**: The heart of the application. It spawns goroutines to continuously read from the remote `stdout`/`stderr` and write to the local terminal while copying a chunk of the stream to the `RingBuffer`.
 -   **Input Handling**: It intercepts local `stdin` rune-by-rune (handling multi-byte UTF-8 encoded characters properly, e.g., Chinese input) to detect the `Ctrl+G` sequence and toggle between Passthrough and Assistant modes.
--   **State Machine**: Parses ANSI escape sequences (OSC commands) to prevent conflicting hotkeys (like `0x07` BEL) from breaking terminal features like Vim's color query.
+-   **State Machine**: Parses ANSI escape sequences — both OSC (Operating System Command) and CSI (Control Sequence Introducer) sequences. In passthrough mode, only the shortcut hotkey is intercepted. In assistant mode, CSI sequences (arrow keys, Home/End, Delete) are consumed and dispatched to the LineEditor.
+-   **LineEditor**: A readline-style line editing engine that manages a rune buffer with cursor position tracking. Supports left/right cursor movement, Home/End, Backspace/Delete, Ctrl+A/E/K/U/W kill commands, and correct column-width handling for CJK wide characters.
 -   **Session Context Tracking**: Maintains the `SessionContext` for the AI, capturing `$PWD`, Last Output, and Exit Code of commands injected into the remote session.
 
 ### 3.4 LLM & MCP Integration (`internal/llm/`)
@@ -165,6 +168,7 @@ sequenceDiagram
     User->>TTYInterceptor: Presses `Ctrl+G`
     TTYInterceptor->>User: Show Assistant Prompt
     User->>TTYInterceptor: Types "Fix this error"
+    Note over TTYInterceptor: LineEditor handles cursor movement,<br/>in-place editing (arrows, Home/End,<br/>Ctrl+A/E/K/U/W)
     
     TTYInterceptor->>LLMModule: Send Prompt + RingBuffer Context
     LLMModule-->>TTYInterceptor: AI Response: "Run `sudo ls -la`"

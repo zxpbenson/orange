@@ -55,10 +55,11 @@ type Interceptor struct {
 	remoteErr    io.Reader
 	history      *RingBuffer
 	assistant    bool
-	assistBuf    bytes.Buffer
+	lineEditor   *LineEditor
 	pendingCmd   string
 	awaitingConf bool
-	escState     int // 0: normal, 1: seen ESC, 2: in OSC, 3: in OSC seen ESC
+	escState     int    // 0: normal, 1: seen ESC, 2: in OSC, 3: in OSC seen ESC, 4: in CSI
+	csiParams    []byte // accumulated CSI parameter bytes (state 4)
 	ctx          *agent.SessionContext
 	recording    bool
 	recordBuf    bytes.Buffer
@@ -73,6 +74,7 @@ func NewInterceptor(cfg *config.Config, remoteIn io.Writer, remoteOut, remoteErr
 		remoteOut:  remoteOut,
 		remoteErr:  remoteErr,
 		history:    NewRingBuffer(8192), // Keep last 8KB of output
+		lineEditor: NewLineEditor(os.Stdout),
 		ctx:        &agent.SessionContext{},
 		recordDone: make(chan bool, 1),
 	}
@@ -258,7 +260,9 @@ func (i *Interceptor) handleConfirmation(char byte) {
 }
 
 // filterInputForShortcut processes ESC sequences and detects the assistant shortcut key.
-// Returns the input data with shortcut key bytes removed.
+// In assistant mode, CSI sequences (arrow keys, Home/End, Delete) are intercepted and
+// dispatched to the LineEditor. In passthrough mode, all bytes flow through untouched.
+// Returns the input data with shortcut key bytes and consumed CSI sequences removed.
 func (i *Interceptor) filterInputForShortcut(data []byte) []byte {
 	shortcutByte := parseShortcutKey(i.cfg.ShortcutKey)
 
@@ -269,31 +273,49 @@ func (i *Interceptor) filterInputForShortcut(data []byte) []byte {
 		case 0: // normal
 			if char == '\x1b' {
 				i.escState = 1
+				if i.assistant {
+					// In assistant mode, consume the ESC byte (it's part of a CSI/OSC sequence)
+					data = append(data[:j], data[j+1:]...)
+					j--
+				}
 			} else if char == shortcutByte {
 				i.assistant = !i.assistant
 				if i.assistant {
 					fmt.Print("\r\n\033[33m[Orange Assistant] Enter your question (press Enter to submit, Ctrl+C to cancel): \033[0m")
-					i.assistBuf.Reset()
+					i.lineEditor.Reset()
 				} else {
 					fmt.Print("\r\n\033[32m[Orange] Returned to SSH.\033[0m\r\n")
 				}
 				data = append(data[:j], data[j+1:]...)
 				j--
 			}
+
 		case 1: // seen ESC
-			if char == ']' {
+			if char == '[' && i.assistant {
+				// CSI sequence in assistant mode — consume and enter state 4
+				i.escState = 4
+				i.csiParams = i.csiParams[:0]
+				data = append(data[:j], data[j+1:]...)
+				j--
+			} else if char == ']' {
 				i.escState = 2
 			} else if char == '\x1b' {
 				i.escState = 1
+				if i.assistant {
+					data = append(data[:j], data[j+1:]...)
+					j--
+				}
 			} else {
 				i.escState = 0
 			}
+
 		case 2: // in OSC
 			if char == '\x07' {
 				i.escState = 0
 			} else if char == '\x1b' {
 				i.escState = 3
 			}
+
 		case 3: // in OSC seen ESC
 			if char == '\\' {
 				i.escState = 0
@@ -302,52 +324,100 @@ func (i *Interceptor) filterInputForShortcut(data []byte) []byte {
 			} else {
 				i.escState = 2
 			}
+
+		case 4: // in CSI (assistant mode only)
+			// Consume all CSI bytes from the data stream
+			data = append(data[:j], data[j+1:]...)
+			j--
+
+			if char >= 0x20 && char <= 0x3F {
+				// Parameter or intermediate byte — accumulate
+				i.csiParams = append(i.csiParams, char)
+			} else if char >= 0x40 && char <= 0x7E {
+				// Final byte — dispatch the CSI command
+				i.dispatchCSI(char)
+				i.escState = 0
+			} else {
+				// Malformed — discard
+				i.escState = 0
+			}
 		}
 	}
 
 	return data
 }
 
-// processAssistantInput handles rune-by-rune input in assistant mode,
-// supporting UTF-8 characters, backspace, Ctrl+C, and Enter to submit.
+// dispatchCSI handles a complete CSI sequence in assistant mode.
+func (i *Interceptor) dispatchCSI(final byte) {
+	param := string(i.csiParams)
+	switch final {
+	case 'C': // Right arrow
+		i.lineEditor.MoveRight()
+	case 'D': // Left arrow
+		i.lineEditor.MoveLeft()
+	case 'H': // Home
+		i.lineEditor.Home()
+	case 'F': // End
+		i.lineEditor.End()
+	case '~':
+		switch param {
+		case "3": // Delete
+			i.lineEditor.Delete()
+		case "1": // Home (alternate)
+			i.lineEditor.Home()
+		case "4": // End (alternate)
+			i.lineEditor.End()
+		}
+	case 'A', 'B': // Up/Down arrow — ignore for now (future: history)
+	}
+}
+
+// processAssistantInput handles input in assistant mode, delegating editing
+// operations to the LineEditor. CSI sequences (arrows, Home/End, Delete) are
+// already consumed by filterInputForShortcut; only printable runes and control
+// characters arrive here.
 func (i *Interceptor) processAssistantInput(data []byte) {
 	rest := data
 	for len(rest) > 0 {
 		r, size := utf8.DecodeRune(rest)
 		if r == utf8.RuneError && size == 1 {
-			// Invalid or incomplete byte, write as raw
-			i.assistBuf.WriteByte(rest[0])
-			fmt.Print(string(rest[0]))
+			// Invalid or incomplete byte — skip
 			rest = rest[1:]
 			continue
 		}
 
 		switch {
 		case r == '\r' || r == '\n':
-			i.submitQuestion(i.assistBuf.String())
+			i.submitQuestion(i.lineEditor.String())
 			return
 
 		case r == 0x03: // Ctrl+C
 			i.assistant = false
 			fmt.Print("\r\n\033[32m[Orange] Cancelled. Returned to SSH.\033[0m\r\n")
+			i.lineEditor.Reset()
 			i.remoteIn.Write([]byte{'\r'})
 			return
 
 		case r == 0x7F || r == '\b': // Backspace
-			bufBytes := i.assistBuf.Bytes()
-			if len(bufBytes) > 0 {
-				_, lastRuneSize := utf8.DecodeLastRune(bufBytes)
-				i.assistBuf.Truncate(len(bufBytes) - lastRuneSize)
-				if lastRuneSize > 1 {
-					fmt.Print("\b\b  \b\b")
-				} else {
-					fmt.Print("\b \b")
-				}
-			}
+			i.lineEditor.Backspace()
 
-		default:
-			i.assistBuf.Write(rest[:size])
-			fmt.Print(string(rest[:size]))
+		case r == 0x01: // Ctrl+A — Home
+			i.lineEditor.Home()
+
+		case r == 0x05: // Ctrl+E — End
+			i.lineEditor.End()
+
+		case r == 0x0B: // Ctrl+K — Kill to end
+			i.lineEditor.KillToEnd()
+
+		case r == 0x15: // Ctrl+U — Kill to start
+			i.lineEditor.KillToStart()
+
+		case r == 0x17: // Ctrl+W — Kill previous word
+			i.lineEditor.KillPrevWord()
+
+		case r >= 0x20: // Printable character
+			i.lineEditor.Insert(r)
 		}
 
 		rest = rest[size:]
