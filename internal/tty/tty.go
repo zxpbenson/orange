@@ -9,10 +9,10 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/zxpbenson/orange/internal/config"
-	"github.com/zxpbenson/orange/internal/sshclient"
-	"github.com/zxpbenson/orange/internal/llm"
 	"github.com/zxpbenson/orange/internal/agent"
+	"github.com/zxpbenson/orange/internal/config"
+	"github.com/zxpbenson/orange/internal/llm"
+	"github.com/zxpbenson/orange/internal/sshclient"
 )
 
 // RingBuffer stores the last N bytes of terminal output
@@ -67,15 +67,19 @@ type Interceptor struct {
 
 func NewInterceptor(cfg *config.Config, remoteIn io.Writer, remoteOut, remoteErr io.Reader) *Interceptor {
 	return &Interceptor{
-		cfg:       cfg,
-		sshClient:   nil, // Will set later
-		remoteIn:  remoteIn,
-		remoteOut: remoteOut,
-		remoteErr: remoteErr,
-		history:   NewRingBuffer(8192), // Keep last 8KB of output
-		ctx:         &agent.SessionContext{},
-		recordDone:  make(chan bool, 1),
+		cfg:        cfg,
+		sshClient:  nil, // Will set later
+		remoteIn:   remoteIn,
+		remoteOut:  remoteOut,
+		remoteErr:  remoteErr,
+		history:    NewRingBuffer(8192), // Keep last 8KB of output
+		ctx:        &agent.SessionContext{},
+		recordDone: make(chan bool, 1),
 	}
+}
+
+func (i *Interceptor) SetClient(client *sshclient.Client) {
+	i.sshClient = client
 }
 
 func parseShortcutKey(key string) byte {
@@ -101,99 +105,11 @@ func extractCommand(text string) string {
 	return ""
 }
 
+// Start launches the I/O bridge between local terminal and remote SSH session.
 func (i *Interceptor) Start() {
-	// Read from remote and write to local stdout + history buffer
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := i.remoteOut.Read(buf)
-			if n > 0 {
-				// Filter out the invisible probes from the user's terminal
-				outputStr := string(buf[:n])
-				if strings.Contains(outputStr, "--ORANGE_") {
-					// We do a simple line-by-line filter to avoid printing the probe commands and outputs
-					lines := strings.Split(outputStr, "\n")
-					var filtered []string
-					for _, line := range lines {
-						if !strings.Contains(line, "--ORANGE_") {
-							filtered = append(filtered, line)
-						}
-					}
-					filteredStr := strings.Join(filtered, "\n")
-					os.Stdout.Write([]byte(filteredStr))
-					i.history.Write([]byte(filteredStr))
-				} else {
-					os.Stdout.Write(buf[:n])
-					i.history.Write(buf[:n])
-				}
+	go i.handleRemoteOutput()
+	go i.handleRemoteError()
 
-				if i.recording {
-					i.recordBuf.Write(buf[:n])
-					output := i.recordBuf.String()
-					// Check if we hit the exit code marker
-					exitMarkerIdx := strings.Index(output, "--ORANGE_EXIT_CODE:")
-					if exitMarkerIdx != -1 {
-						endIdx := strings.Index(output[exitMarkerIdx+19:], "--")
-						if endIdx != -1 {
-							i.ctx.LastExitCode = output[exitMarkerIdx+19 : exitMarkerIdx+19+endIdx]
-								
-								pwdMarkerIdx := strings.Index(output, "--ORANGE_PWD:")
-								if pwdMarkerIdx != -1 {
-									pwdEndIdx := strings.Index(output[pwdMarkerIdx+13:], "--")
-									if pwdEndIdx != -1 {
-										i.ctx.CurrentDir = output[pwdMarkerIdx+13 : pwdMarkerIdx+13+pwdEndIdx]
-									}
-								}
-							
-							// Clean up the output string
-							cleanOut := output[:exitMarkerIdx]
-							startMarker := "--ORANGE_START--"
-							startIdx := strings.Index(cleanOut, startMarker)
-							if startIdx != -1 {
-								// Skip the marker and its newline
-								cleanOut = cleanOut[startIdx+len(startMarker):]
-								if strings.HasPrefix(cleanOut, "\n") {
-									cleanOut = cleanOut[2:]
-								} else if strings.HasPrefix(cleanOut, "\n") {
-									cleanOut = cleanOut[1:]
-								}
-							}
-							i.ctx.LastOutput = cleanOut
-
-							// Reset recording
-							i.recording = false
-							i.recordBuf.Reset()
-							select {
-							case i.recordDone <- true:
-							default:
-							}
-						}
-					}
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-	}()
-
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := i.remoteErr.Read(buf)
-			if n > 0 {
-				os.Stderr.Write(buf[:n])
-				i.history.Write(buf[:n])
-			}
-			if err != nil {
-				break
-			}
-		}
-	}()
-
-	// Read from local stdin and write to remote or intercept
-	// To support multi-byte utf8 (e.g. Chinese) input in raw mode,
-	// we need a buffer that handles incomplete runes.
 	buf := make([]byte, 4096)
 	for {
 		n, err := os.Stdin.Read(buf)
@@ -203,239 +119,367 @@ func (i *Interceptor) Start() {
 		if n == 0 {
 			continue
 		}
+		i.handleLocalInput(buf[:n])
+	}
+}
 
-		inputData := buf[:n]
-
-		// If we are waiting for a Y/n confirmation
-		if i.awaitingConf {
-			char := inputData[0]
-			if char == 'y' || char == 'Y' || char == '\r' || char == '\n' {
-				fmt.Print("\r\n\033[32m[Orange] Executing...\033[0m\r\n")
-				i.ctx.LastCommand = i.pendingCmd
-				// In manual mode, we just execute the command normally to avoid polluting the terminal.
-				// The user will read the output themselves.
-				i.remoteIn.Write([]byte(i.pendingCmd + "\n"))
+// handleRemoteOutput reads remote stdout, filters ORANGE markers, writes to local terminal and history.
+func (i *Interceptor) handleRemoteOutput() {
+	buf := make([]byte, 1024)
+	for {
+		n, err := i.remoteOut.Read(buf)
+		if n > 0 {
+			outputStr := string(buf[:n])
+			if strings.Contains(outputStr, "--ORANGE_") {
+				// Line-by-line filter to avoid printing probe commands and outputs
+				lines := strings.Split(outputStr, "\n")
+				var filtered []string
+				for _, line := range lines {
+					if !strings.Contains(line, "--ORANGE_") {
+						filtered = append(filtered, line)
+					}
+				}
+				filteredStr := strings.Join(filtered, "\n")
+				os.Stdout.Write([]byte(filteredStr))
+				i.history.Write([]byte(filteredStr))
 			} else {
-				fmt.Print("\r\n\033[31m[Orange] Cancelled.\033[0m\r\n")
-				i.remoteIn.Write([]byte{'\r'})
+				os.Stdout.Write(buf[:n])
+				i.history.Write(buf[:n])
 			}
-			i.awaitingConf = false
-			continue
-		}
 
-		// Handle toggling assistant mode
-		// Some terminals might send Ctrl+A within a larger block, but usually it's solitary
-		shortcutByte := parseShortcutKey(i.cfg.ShortcutKey)
-		for j := 0; j < len(inputData); j++ {
-			char := inputData[j]
-
-			if i.escState == 0 {
-				if char == '' {
-					i.escState = 1
-				} else if char == shortcutByte {
-					i.assistant = !i.assistant
-					if i.assistant {
-						fmt.Print("\r\n\033[33m[Orange Assistant] Enter your question (press Enter to submit, Ctrl+C to cancel): \033[0m")
-						i.assistBuf.Reset()
-					} else {
-						fmt.Print("\r\n\033[32m[Orange] Returned to SSH.\033[0m\r\n")
-					}
-					inputData = append(inputData[:j], inputData[j+1:]...)
-					j--
-				}
-			} else if i.escState == 1 {
-				if char == ']' {
-					i.escState = 2
-				} else if char == '' {
-					i.escState = 1
-				} else {
-					i.escState = 0
-				}
-			} else if i.escState == 2 {
-				if char == '' {
-					i.escState = 0
-				} else if char == '' {
-					i.escState = 3
-				}
-			} else if i.escState == 3 {
-				if char == '\\' {
-					i.escState = 0
-				} else if char == '' {
-					i.escState = 3
-				} else {
-					i.escState = 2
-				}
+			if i.recording {
+				i.processRecordingOutput(buf[:n])
 			}
 		}
-
-		if len(inputData) == 0 {
-			continue
-		}
-
-		if i.assistant {
-			// We process the inputData rune by rune to properly handle UTF-8 backspaces and prints
-			rest := inputData
-			for len(rest) > 0 {
-				r, size := utf8.DecodeRune(rest)
-				if r == utf8.RuneError && size == 1 {
-					// Not enough bytes to decode, or invalid. Just write it as raw byte for now.
-					i.assistBuf.WriteByte(rest[0])
-					fmt.Print(string(rest[0]))
-					rest = rest[1:]
-					continue
-				}
-
-				// Handle special characters
-				if r == '\r' || r == '\n' {
-					fmt.Print("\r\n\033[33m[Orange] Thinking...\033[0m\r\n")
-					question := i.assistBuf.String()
-					prompt := fmt.Sprintf("%s\n\nTerminal History:\n```\n%s\n```\n\nUser Question: %s", i.ctx.GetContextPrompt(), i.history.String(), question)
-					
-					answer, err := llm.AskAssistant(i.cfg, prompt)
-					if err != nil {
-						fmt.Printf("\r\n\033[31m[Orange Error] %v\033[0m\r\n", err)
-						i.assistant = false
-						rest = nil
-						break
-					}
-
-					// If autonomous mode, we loop until DONE
-					for i.cfg.Autonomous {
-						agentResp, err := agent.ParseAgentResponse(answer)
-						if err != nil {
-							fmt.Printf("\r\n\033[31m[Orange Error] Failed to parse JSON: %v\nRaw Output:\n%s\033[0m\r\n", err, answer)
-							break
-						}
-
-						fmt.Printf("\r\n\033[36m[Agent Thought]\033[0m \r\n%s\r\n", strings.ReplaceAll(agentResp.Thought, "\n", "\r\n"))
-
-						if agentResp.Status == "DONE" || agentResp.Action == "finish" {
-							finalAns := strings.ReplaceAll(agentResp.FinalAnswer, "\n", "\r\n")
-							fmt.Printf("\r\n\033[32m[Agent Finished]\033[0m \r\n%s\r\n", finalAns)
-							i.remoteIn.Write([]byte{'\r'})
-							break
-						}
-
-						if agentResp.Action == "exec_command" && agentResp.Command != "" {
-							i.ctx.LastCommand = agentResp.Command
-
-							if agentResp.Interactive {
-								fmt.Printf("\r\n\033[35m[Agent Executing in Foreground] %s\033[0m\r\n", agentResp.Command)
-								i.recording = true
-								i.recordBuf.Reset()
-								
-								// Drain channel if any old signal is left
-								select {
-								case <-i.recordDone:
-								default:
-								}
-
-								probeCmd := fmt.Sprintf("echo \"--ORANGE_START--\" ; %s ; echo \"--ORANGE_EXIT_CODE:$?--\" ; echo \"--ORANGE_PWD:$PWD--\"\n", agentResp.Command)
-								i.remoteIn.Write([]byte(probeCmd))
-
-								// Block and wait for recording to finish
-								<-i.recordDone
-							} else {
-								fmt.Printf("\r\n\033[33m[Agent Executing in Background] %s\033[0m\r\n", agentResp.Command)
-								
-								stdout, stderr, exitCode, err := i.sshClient.ExecuteBackground(agentResp.Command, i.ctx.CurrentDir)
-								
-								i.ctx.LastExitCode = fmt.Sprintf("%d", exitCode)
-								out := stdout
-								if stderr != "" {
-									out += "\n[Stderr]:\n" + stderr
-								}
-								if err != nil && exitCode == -1 {
-									out += fmt.Sprintf("\n[SSH Execution Error]: %v", err)
-								}
-								i.ctx.LastOutput = strings.TrimSpace(out)
-							}
-
-							// Re-prompt the LLM with the new context
-							fmt.Print("\r\n\033[33m[Orange] Thinking...\033[0m\r\n")
-							prompt = fmt.Sprintf("%s\n\nTerminal History:\n```\n%s\n```\n\nUser Question: %s", i.ctx.GetContextPrompt(), i.history.String(), question)
-							answer, err = llm.AskAssistant(i.cfg, prompt)
-							if err != nil {
-								fmt.Printf("\r\n\033[31m[Orange Error] %v\033[0m\r\n", err)
-								break
-							}
-							continue // Loop again with new answer
-						}
-						break
-					}
-
-					// Print answer with basic formatting only in non-autonomous mode
-					if !i.cfg.Autonomous {
-						lines := strings.Split(answer, "\n")
-						for _, line := range lines {
-							fmt.Printf("\r\033[36m%s\033[0m\n", line)
-						}
-					}
-
-					// Check if AI suggested a command
-					cmdToRun := extractCommand(answer)
-					if cmdToRun != "" {
-						if i.cfg.ApprovalMode == "never" {
-							// Execute directly (risky)
-							fmt.Printf("\r\n\033[35m[Orange] Executing automatically (approval-policy=never): %s\033[0m\r\n", cmdToRun)
-							i.ctx.LastCommand = cmdToRun
-							i.remoteIn.Write([]byte(cmdToRun + "\n"))
-							// no need to inject \r here as the command execution will print a prompt anyway
-						} else {
-							// Prompt for approval
-							i.pendingCmd = cmdToRun
-							i.awaitingConf = true
-							fmt.Printf("\r\n\033[33m[Orange] AI suggests running this command:\033[0m \033[1;37m%s\033[0m", cmdToRun)
-							fmt.Print("\r\n\033[33mDo you want to execute it? [Y/n]: \033[0m")
-						}
-					}
-					
-					// Exit assistant mode after answering
-					i.assistant = false
-					rest = nil
-					// If we didn't prompt for a command, we should redraw the prompt
-					if cmdToRun == "" {
-						i.remoteIn.Write([]byte{'\r'})
-
-					}
-					break
-				} else if r == 0x03 { // Ctrl+C
-					i.assistant = false
-					fmt.Print("\r\n\033[32m[Orange] Cancelled. Returned to SSH.\033[0m\r\n")
-					rest = nil
-					i.remoteIn.Write([]byte{'\r'})
-					break
-				} else if r == 0x7F || r == '\b' { // Backspace
-					// We need to pop the last rune from assistBuf, not just the last byte
-					bufBytes := i.assistBuf.Bytes()
-					if len(bufBytes) > 0 {
-						_, lastRuneSize := utf8.DecodeLastRune(bufBytes)
-						i.assistBuf.Truncate(len(bufBytes) - lastRuneSize)
-						
-						// Erase visually. Note: multi-byte char might take up more terminal columns (e.g. Chinese is 2 wide)
-						// A simple backspace+space+backspace works for most 1-wide chars, but for wide chars 
-						// we'll issue two backspaces if it was a multi-byte sequence to be safe.
-						if lastRuneSize > 1 {
-							fmt.Print("\b\b  \b\b")
-						} else {
-							fmt.Print("\b \b")
-						}
-					}
-				} else {
-					// Normal character
-					i.assistBuf.Write(rest[:size])
-					fmt.Print(string(rest[:size]))
-				}
-
-				rest = rest[size:]
-			}
-		} else {
-			// Normal SSH passthrough: write exactly what we read
-			i.remoteIn.Write(inputData)
+		if err != nil {
+			break
 		}
 	}
 }
 
-func (i *Interceptor) SetClient(client *sshclient.Client) {
-	i.sshClient = client
+// processRecordingOutput parses recording buffer for ORANGE markers to extract exit code, pwd, and command output.
+func (i *Interceptor) processRecordingOutput(data []byte) {
+	i.recordBuf.Write(data)
+	output := i.recordBuf.String()
+
+	exitMarkerIdx := strings.Index(output, "--ORANGE_EXIT_CODE:")
+	if exitMarkerIdx == -1 {
+		return
+	}
+
+	endIdx := strings.Index(output[exitMarkerIdx+19:], "--")
+	if endIdx == -1 {
+		return
+	}
+
+	i.ctx.LastExitCode = output[exitMarkerIdx+19 : exitMarkerIdx+19+endIdx]
+
+	// Extract PWD if present
+	pwdMarkerIdx := strings.Index(output, "--ORANGE_PWD:")
+	if pwdMarkerIdx != -1 {
+		pwdEndIdx := strings.Index(output[pwdMarkerIdx+13:], "--")
+		if pwdEndIdx != -1 {
+			i.ctx.CurrentDir = output[pwdMarkerIdx+13 : pwdMarkerIdx+13+pwdEndIdx]
+		}
+	}
+
+	// Clean up the output: extract content between START and EXIT_CODE markers
+	cleanOut := output[:exitMarkerIdx]
+	startMarker := "--ORANGE_START--"
+	startIdx := strings.Index(cleanOut, startMarker)
+	if startIdx != -1 {
+		cleanOut = cleanOut[startIdx+len(startMarker):]
+		if strings.HasPrefix(cleanOut, "\r\n") {
+			cleanOut = cleanOut[2:]
+		} else if strings.HasPrefix(cleanOut, "\n") {
+			cleanOut = cleanOut[1:]
+		}
+	}
+	i.ctx.LastOutput = cleanOut
+
+	// Reset recording state and signal completion
+	i.recording = false
+	i.recordBuf.Reset()
+	select {
+	case i.recordDone <- true:
+	default:
+	}
+}
+
+// handleRemoteError reads remote stderr and writes to local stderr and history.
+func (i *Interceptor) handleRemoteError() {
+	buf := make([]byte, 1024)
+	for {
+		n, err := i.remoteErr.Read(buf)
+		if n > 0 {
+			os.Stderr.Write(buf[:n])
+			i.history.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+}
+
+// handleLocalInput dispatches local input based on current state:
+// confirmation mode, assistant mode, or normal SSH passthrough.
+func (i *Interceptor) handleLocalInput(inputData []byte) {
+	// If waiting for Y/n confirmation
+	if i.awaitingConf {
+		i.handleConfirmation(inputData[0])
+		return
+	}
+
+	// Run ESC state machine and check for shortcut key
+	inputData = i.filterInputForShortcut(inputData)
+	if len(inputData) == 0 {
+		return
+	}
+
+	if i.assistant {
+		i.processAssistantInput(inputData)
+	} else {
+		// Normal SSH passthrough
+		i.remoteIn.Write(inputData)
+	}
+}
+
+// handleConfirmation processes Y/n input when a command is pending approval.
+func (i *Interceptor) handleConfirmation(char byte) {
+	if char == 'y' || char == 'Y' || char == '\r' || char == '\n' {
+		fmt.Print("\r\n\033[32m[Orange] Executing...\033[0m\r\n")
+		i.ctx.LastCommand = i.pendingCmd
+		i.remoteIn.Write([]byte(i.pendingCmd + "\n"))
+	} else {
+		fmt.Print("\r\n\033[31m[Orange] Cancelled.\033[0m\r\n")
+		i.remoteIn.Write([]byte{'\r'})
+	}
+	i.awaitingConf = false
+}
+
+// filterInputForShortcut processes ESC sequences and detects the assistant shortcut key.
+// Returns the input data with shortcut key bytes removed.
+func (i *Interceptor) filterInputForShortcut(data []byte) []byte {
+	shortcutByte := parseShortcutKey(i.cfg.ShortcutKey)
+
+	for j := 0; j < len(data); j++ {
+		char := data[j]
+
+		switch i.escState {
+		case 0: // normal
+			if char == '\x1b' {
+				i.escState = 1
+			} else if char == shortcutByte {
+				i.assistant = !i.assistant
+				if i.assistant {
+					fmt.Print("\r\n\033[33m[Orange Assistant] Enter your question (press Enter to submit, Ctrl+C to cancel): \033[0m")
+					i.assistBuf.Reset()
+				} else {
+					fmt.Print("\r\n\033[32m[Orange] Returned to SSH.\033[0m\r\n")
+				}
+				data = append(data[:j], data[j+1:]...)
+				j--
+			}
+		case 1: // seen ESC
+			if char == ']' {
+				i.escState = 2
+			} else if char == '\x1b' {
+				i.escState = 1
+			} else {
+				i.escState = 0
+			}
+		case 2: // in OSC
+			if char == '\x07' {
+				i.escState = 0
+			} else if char == '\x1b' {
+				i.escState = 3
+			}
+		case 3: // in OSC seen ESC
+			if char == '\\' {
+				i.escState = 0
+			} else if char == '\x1b' {
+				i.escState = 3
+			} else {
+				i.escState = 2
+			}
+		}
+	}
+
+	return data
+}
+
+// processAssistantInput handles rune-by-rune input in assistant mode,
+// supporting UTF-8 characters, backspace, Ctrl+C, and Enter to submit.
+func (i *Interceptor) processAssistantInput(data []byte) {
+	rest := data
+	for len(rest) > 0 {
+		r, size := utf8.DecodeRune(rest)
+		if r == utf8.RuneError && size == 1 {
+			// Invalid or incomplete byte, write as raw
+			i.assistBuf.WriteByte(rest[0])
+			fmt.Print(string(rest[0]))
+			rest = rest[1:]
+			continue
+		}
+
+		switch {
+		case r == '\r' || r == '\n':
+			i.submitQuestion(i.assistBuf.String())
+			return
+
+		case r == 0x03: // Ctrl+C
+			i.assistant = false
+			fmt.Print("\r\n\033[32m[Orange] Cancelled. Returned to SSH.\033[0m\r\n")
+			i.remoteIn.Write([]byte{'\r'})
+			return
+
+		case r == 0x7F || r == '\b': // Backspace
+			bufBytes := i.assistBuf.Bytes()
+			if len(bufBytes) > 0 {
+				_, lastRuneSize := utf8.DecodeLastRune(bufBytes)
+				i.assistBuf.Truncate(len(bufBytes) - lastRuneSize)
+				if lastRuneSize > 1 {
+					fmt.Print("\b\b  \b\b")
+				} else {
+					fmt.Print("\b \b")
+				}
+			}
+
+		default:
+			i.assistBuf.Write(rest[:size])
+			fmt.Print(string(rest[:size]))
+		}
+
+		rest = rest[size:]
+	}
+}
+
+// submitQuestion sends the user's question to the LLM and handles the response.
+func (i *Interceptor) submitQuestion(question string) {
+	fmt.Print("\r\n\033[33m[Orange] Thinking...\033[0m\r\n")
+
+	prompt := i.buildPrompt(question)
+	answer, err := llm.AskAssistant(i.cfg, prompt)
+	if err != nil {
+		fmt.Printf("\r\n\033[31m[Orange Error] %v\033[0m\r\n", err)
+		i.assistant = false
+		return
+	}
+
+	if i.cfg.Autonomous {
+		i.executeAutonomousLoop(question, answer)
+	} else {
+		i.handleManualAnswer(answer)
+	}
+
+	i.assistant = false
+}
+
+// buildPrompt constructs the full LLM prompt with context, history, and question.
+func (i *Interceptor) buildPrompt(question string) string {
+	return fmt.Sprintf("%s\n\nTerminal History:\n```\n%s\n```\n\nUser Question: %s",
+		i.ctx.GetContextPrompt(), i.history.String(), question)
+}
+
+// handleManualAnswer processes the LLM response in manual mode:
+// displays the answer and handles command suggestion/approval.
+func (i *Interceptor) handleManualAnswer(answer string) {
+	// Print answer with formatting
+	lines := strings.Split(answer, "\n")
+	for _, line := range lines {
+		fmt.Printf("\r\033[36m%s\033[0m\n", line)
+	}
+
+	// Check if AI suggested a command
+	cmdToRun := extractCommand(answer)
+	if cmdToRun == "" {
+		i.remoteIn.Write([]byte{'\r'})
+		return
+	}
+
+	if i.cfg.ApprovalMode == "never" {
+		// Execute directly (risky)
+		fmt.Printf("\r\n\033[35m[Orange] Executing automatically (approval-policy=never): %s\033[0m\r\n", cmdToRun)
+		i.ctx.LastCommand = cmdToRun
+		i.remoteIn.Write([]byte(cmdToRun + "\n"))
+	} else {
+		// Prompt for approval
+		i.pendingCmd = cmdToRun
+		i.awaitingConf = true
+		fmt.Printf("\r\n\033[33m[Orange] AI suggests running this command:\033[0m \033[1;37m%s\033[0m", cmdToRun)
+		fmt.Print("\r\n\033[33mDo you want to execute it? [Y/n]: \033[0m")
+	}
+}
+
+// executeAutonomousLoop runs the autonomous agent loop: parse LLM response, execute commands,
+// feed results back to LLM, repeat until DONE.
+func (i *Interceptor) executeAutonomousLoop(question, answer string) {
+	for {
+		agentResp, err := agent.ParseAgentResponse(answer)
+		if err != nil {
+			fmt.Printf("\r\n\033[31m[Orange Error] Failed to parse JSON: %v\nRaw Output:\n%s\033[0m\r\n", err, answer)
+			break
+		}
+
+		fmt.Printf("\r\n\033[36m[Agent Thought]\033[0m \r\n%s\r\n", strings.ReplaceAll(agentResp.Thought, "\n", "\r\n"))
+
+		if agentResp.Status == "DONE" || agentResp.Action == "finish" {
+			finalAns := strings.ReplaceAll(agentResp.FinalAnswer, "\n", "\r\n")
+			fmt.Printf("\r\n\033[32m[Agent Finished]\033[0m \r\n%s\r\n", finalAns)
+			i.remoteIn.Write([]byte{'\r'})
+			break
+		}
+
+		if agentResp.Action != "exec_command" || agentResp.Command == "" {
+			break
+		}
+
+		i.ctx.LastCommand = agentResp.Command
+		i.executeAgentCommand(agentResp)
+
+		// Re-prompt the LLM with updated context
+		fmt.Print("\r\n\033[33m[Orange] Thinking...\033[0m\r\n")
+		prompt := i.buildPrompt(question)
+		answer, err = llm.AskAssistant(i.cfg, prompt)
+		if err != nil {
+			fmt.Printf("\r\n\033[31m[Orange Error] %v\033[0m\r\n", err)
+			break
+		}
+	}
+}
+
+// executeAgentCommand executes a single command from the autonomous agent,
+// either in foreground (interactive) or background (silent) mode.
+func (i *Interceptor) executeAgentCommand(resp *agent.AgentResponse) {
+	if resp.Interactive {
+		fmt.Printf("\r\n\033[35m[Agent Executing in Foreground] %s\033[0m\r\n", resp.Command)
+		i.recording = true
+		i.recordBuf.Reset()
+
+		// Drain channel if any old signal is left
+		select {
+		case <-i.recordDone:
+		default:
+		}
+
+		probeCmd := fmt.Sprintf("echo \"--ORANGE_START--\" ; %s ; echo \"--ORANGE_EXIT_CODE:$?--\" ; echo \"--ORANGE_PWD:$PWD--\"\n", resp.Command)
+		i.remoteIn.Write([]byte(probeCmd))
+
+		// Block and wait for recording to finish
+		<-i.recordDone
+	} else {
+		fmt.Printf("\r\n\033[33m[Agent Executing in Background] %s\033[0m\r\n", resp.Command)
+
+		stdout, stderr, exitCode, err := i.sshClient.ExecuteBackground(resp.Command, i.ctx.CurrentDir)
+
+		i.ctx.LastExitCode = fmt.Sprintf("%d", exitCode)
+		out := stdout
+		if stderr != "" {
+			out += "\n[Stderr]:\n" + stderr
+		}
+		if err != nil && exitCode == -1 {
+			out += fmt.Sprintf("\n[SSH Execution Error]: %v", err)
+		}
+		i.ctx.LastOutput = strings.TrimSpace(out)
+	}
 }

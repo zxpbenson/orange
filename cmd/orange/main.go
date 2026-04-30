@@ -13,55 +13,67 @@ import (
 	"golang.org/x/term"
 )
 
-func run() error {
-	var port int
-	var identityFile string
-	var approvalMode string
-	var autonomous bool
+type cliArgs struct {
+	username     string
+	host         string
+	port         int
+	identityFile string
+	approvalMode string
+	autonomous   bool
+}
+
+// parseArgs parses CLI flags and the positional [user@]host argument.
+func parseArgs() (*cliArgs, error) {
+	var args cliArgs
 
 	fs := flag.NewFlagSet("orange", flag.ContinueOnError)
-	fs.IntVar(&port, "p", 22, "Port to connect to on the remote host")
-	fs.StringVar(&identityFile, "i", "", "Selects a file from which the identity (private key) for public key authentication is read")
-	fs.StringVar(&approvalMode, "approval-policy", "always", "Approval policy for AI commands: always, never (risky)")
-	fs.BoolVar(&autonomous, "autonomous", false, "Enable autonomous agentic loop")
+	fs.IntVar(&args.port, "p", 22, "Port to connect to on the remote host")
+	fs.StringVar(&args.identityFile, "i", "", "Selects a file from which the identity (private key) for public key authentication is read")
+	fs.StringVar(&args.approvalMode, "approval-policy", "always", "Approval policy for AI commands: always, never (risky)")
+	fs.BoolVar(&args.autonomous, "autonomous", false, "Enable autonomous agentic loop")
 
 	target := ""
-	args := os.Args[1:]
-	
+	remaining := os.Args[1:]
+
 	// Parse interleaved flags and positional arguments properly
-	for len(args) > 0 {
-		if err := fs.Parse(args); err != nil {
-			return err
+	for len(remaining) > 0 {
+		if err := fs.Parse(remaining); err != nil {
+			return nil, err
 		}
-		
+
 		if len(fs.Args()) > 0 {
 			if target == "" {
 				target = fs.Arg(0)
 			}
-			args = fs.Args()[1:]
+			remaining = fs.Args()[1:]
 		} else {
 			break
 		}
 	}
 
 	if target == "" {
-		return fmt.Errorf("Usage: orange [-p port] [-i identity_file] [--approval-policy always|never] [user@]host")
+		return nil, fmt.Errorf("Usage: orange [-p port] [-i identity_file] [--approval-policy always|never] [user@]host")
 	}
 
-	var username, host string
+	// Split user@host
 	lastAt := strings.LastIndex(target, "@")
 	if lastAt != -1 {
-		username = target[:lastAt]
-		host = target[lastAt+1:]
+		args.username = target[:lastAt]
+		args.host = target[lastAt+1:]
 	} else {
-		host = target
+		args.host = target
 		u, err := user.Current()
 		if err != nil {
-			return fmt.Errorf("could not get current user: %v", err)
+			return nil, fmt.Errorf("could not get current user: %v", err)
 		}
-		username = u.Username
+		args.username = u.Username
 	}
 
+	return &args, nil
+}
+
+// loadConfigWithOverrides loads config from file and merges in CLI flags.
+func loadConfigWithOverrides(args *cliArgs) *config.Config {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		fmt.Printf("Warning: failed to load config: %v\r\n", err)
@@ -70,11 +82,22 @@ func run() error {
 			Model:       "gpt-4o",
 		}
 	}
-	cfg.ApprovalMode = approvalMode
-	cfg.Autonomous = autonomous
+	cfg.ApprovalMode = args.approvalMode
+	cfg.Autonomous = args.autonomous
+	return cfg
+}
 
-	fmt.Printf("Connecting to %s@%s:%d...\n", username, host, port)
-	client, err := sshclient.Connect(username, host, port, identityFile)
+func run() error {
+	args, err := parseArgs()
+	if err != nil {
+		return err
+	}
+
+	cfg := loadConfigWithOverrides(args)
+
+	// Establish SSH connection
+	fmt.Printf("Connecting to %s@%s:%d...\n", args.username, args.host, args.port)
+	client, err := sshclient.Connect(args.username, args.host, args.port, args.identityFile)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %v", err)
 	}
@@ -112,17 +135,16 @@ func run() error {
 		return fmt.Errorf("failed to setup stderr: %v", err)
 	}
 
+	// Launch interceptor and remote shell
 	interceptor := tty.NewInterceptor(cfg, stdin, stdout, stderr)
 	interceptor.SetClient(client)
 
 	fmt.Printf("\r\n\033[32m[Orange] Connected. Press %s to ask the AI assistant.\033[0m\r\n", strings.ToUpper(cfg.ShortcutKey))
 
-	// Start the remote shell FIRST
 	if err := client.Shell(session); err != nil {
 		return fmt.Errorf("failed to start shell: %v", err)
 	}
 
-	// Start the interceptor in a goroutine so it doesn't block session.Wait()
 	go interceptor.Start()
 
 	session.Wait()
